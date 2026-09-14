@@ -29,10 +29,12 @@ pub struct CapturedKeys {
     pub shift: bool,
 }
 
-/// Garde un acquire du hook (mini-clavier, capture GUI, etc.).
+/// Garde un acquire du hook (capture GUI).
+#[allow(dead_code)]
 pub struct KeyboardHookGuard;
 
 impl KeyboardHookGuard {
+    #[allow(dead_code)]
     pub fn acquire() -> Option<Self> {
         retain()?;
         Some(Self)
@@ -153,6 +155,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let msg = wparam.0 as u32;
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
             let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            // Ne jamais bloquer nos propres SendInput — sinon le mini-clavier "capture" mais n'injecte rien.
+            const LLKHF_INJECTED: u32 = 0x0000_0010;
+            if kb.flags.0 & LLKHF_INJECTED != 0 {
+                return CallNextHookEx(hook_handle(), code, wparam, lparam);
+            }
             let vk = kb.vkCode as u16;
 
             if KEY_CAPTURE_ACTIVE.load(Ordering::Relaxed) {
@@ -179,13 +186,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             }
         }
     }
+    CallNextHookEx(hook_handle(), code, wparam, lparam)
+}
+
+fn hook_handle() -> Option<HHOOK> {
     let hook_raw = HOOK_HANDLE.load(Ordering::Relaxed);
-    let next = if hook_raw == 0 {
+    if hook_raw == 0 {
         None
     } else {
         Some(HHOOK(hook_raw as _))
-    };
-    CallNextHookEx(next, code, wparam, lparam)
+    }
 }
 
 fn should_suppress_now() -> bool {

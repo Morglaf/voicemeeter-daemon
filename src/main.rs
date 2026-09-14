@@ -19,9 +19,9 @@ use config::Config;
 use global_hotkey::GlobalHotKeyEvent;
 use gui::{create_config_window, ConfigGui};
 use hotkeys::{HotkeyAction, HotkeyRegistry};
-use mini_keyboard::hook::KeyboardHookGuard;
+use mini_keyboard::mapping::MappedAction;
 use mini_keyboard::notify::{show_error_toast, show_info_toast, show_scene_toast};
-use mini_keyboard::{MiniKeyboardEvent, MiniKeyboardListener};
+use mini_keyboard::{inject, MiniKeyboardEvent, MiniKeyboardListener};
 use scene_manager::SceneManager;
 use std::sync::Arc;
 use std::thread;
@@ -56,6 +56,8 @@ pub enum UserEvent {
     VmUiRefresh,
     /// Liste HID mise à jour — reconstruire le menu tray.
     TrayMenuRefresh,
+    /// Injection clavier/souris depuis le thread UI (évite les soucis avec SendInput hors UI).
+    MiniKeyboardInject(MappedAction),
 }
 
 const SWITCH_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -72,8 +74,6 @@ struct App {
     scene_manager: SceneManager,
     mini_keyboard: Option<MiniKeyboardListener>,
     app_watcher: Option<AppWatcher>,
-    /// Hook LL uniquement si mini-clavier actif (sinon la frappe système est impactée).
-    keyboard_hook: Option<KeyboardHookGuard>,
 }
 
 impl App {
@@ -81,15 +81,10 @@ impl App {
         if let Some(mut listener) = self.mini_keyboard.take() {
             listener.stop();
         }
-        self.keyboard_hook = None;
-
+        // Pas de WH_KEYBOARD_LL pour le mini-clavier : la capture HID exclusive suffit,
+        // et le hook mangait les SendInput (touches injectées → aucun effet).
         if !self.config.mini_keyboard.enabled {
             return;
-        }
-
-        self.keyboard_hook = KeyboardHookGuard::acquire();
-        if self.keyboard_hook.is_none() {
-            eprintln!("hook clavier global non installé — suppression média OS indisponible");
         }
 
         match MiniKeyboardListener::start(
@@ -325,7 +320,6 @@ impl ApplicationHandler<UserEvent> for App {
                             if let Some(mut listener) = self.mini_keyboard.take() {
                                 listener.stop();
                             }
-                            self.keyboard_hook = None;
                             if let Some(mut watcher) = self.app_watcher.take() {
                                 watcher.stop();
                             }
@@ -405,6 +399,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::TrayMenuRefresh => {
                 self.refresh_tray_menu();
+            }
+            UserEvent::MiniKeyboardInject(action) => {
+                if let Err(e) = inject::execute(&action) {
+                    show_error_toast(&format!("Injection: {e}"));
+                }
             }
             UserEvent::Tray(_) => {}
         }
@@ -570,7 +569,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         scene_manager,
         mini_keyboard: None,
         app_watcher: None,
-        keyboard_hook: None,
     };
 
     event_loop.run_app(&mut app)?;

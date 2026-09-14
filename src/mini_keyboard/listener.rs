@@ -44,32 +44,6 @@ impl MiniKeyboardListener {
 
         // Pas d'énum HID sur le thread UI — ça bloque et, avec un hook LL, fige la frappe.
         let worker = thread::spawn(move || {
-            let targets = hid::capture_targets(
-                worker_config.device.vid,
-                worker_config.device.pid,
-                worker_config.device.path.as_deref(),
-            );
-            let device_label = if worker_config.device.path.is_none() && targets.len() > 1 {
-                format!(
-                    "{:04X}:{:04X} ({} interfaces)",
-                    worker_config.device.vid,
-                    worker_config.device.pid,
-                    targets.len()
-                )
-            } else {
-                targets
-                    .first()
-                    .map(|d| d.label())
-                    .unwrap_or_else(|| {
-                        format!(
-                            "{:04X}:{:04X}",
-                            worker_config.device.vid, worker_config.device.pid
-                        )
-                    })
-            };
-            let _ = worker_proxy.send_event(crate::UserEvent::MiniKeyboard(
-                MiniKeyboardEvent::DeviceConnected(device_label),
-            ));
             reader_loop(
                 worker_config,
                 worker_scenes,
@@ -105,6 +79,7 @@ fn reader_loop(
     stop: Arc<AtomicBool>,
 ) {
     let mut debounce = InputDebounce::new();
+    let mut announced_connect = false;
 
     while !stop.load(Ordering::SeqCst) {
         let readers = match hid::open_readers(
@@ -117,6 +92,7 @@ fn reader_loop(
                 let _ = proxy.send_event(crate::UserEvent::MiniKeyboard(
                     MiniKeyboardEvent::DeviceDisconnected,
                 ));
+                announced_connect = false;
                 thread::sleep(hid::RETRY_INTERVAL);
                 continue;
             }
@@ -124,10 +100,27 @@ fn reader_loop(
                 let _ = proxy.send_event(crate::UserEvent::MiniKeyboard(
                     MiniKeyboardEvent::Error(format!("HID: {e}")),
                 ));
+                announced_connect = false;
                 thread::sleep(hid::RETRY_INTERVAL);
                 continue;
             }
         };
+
+        if !announced_connect {
+            let label = readers
+                .first()
+                .map(|r| r.info.label())
+                .unwrap_or_else(|| {
+                    format!("{:04X}:{:04X}", config.device.vid, config.device.pid)
+                });
+            let _ = proxy.send_event(crate::UserEvent::MiniKeyboard(
+                MiniKeyboardEvent::DeviceConnected(format!(
+                    "{label} ({} iface)",
+                    readers.len()
+                )),
+            ));
+            announced_connect = true;
+        }
 
         eprintln!(
             "mini-clavier: {} interface(s) en écoute{}",
@@ -275,6 +268,15 @@ fn handle_key(
     };
 
     if matches!(action, MappedAction::None) {
+        eprintln!("mini-clavier: {key:?} sans mapping sur la scène active");
+        return;
+    }
+
+    eprintln!("mini-clavier: {key:?} → {}", action.label());
+
+    // SendInput depuis le thread UI : fiable avec la pompe de messages winit.
+    if action.is_injectable() {
+        let _ = proxy.send_event(crate::UserEvent::MiniKeyboardInject(action));
         return;
     }
 
