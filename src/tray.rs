@@ -1,4 +1,6 @@
 use crate::config::{Config, INCREMENT_OPTIONS, MENU_BUS_COUNT};
+use crate::tray_mini_keyboard::{self, MiniKeyboardTrayCommand};
+use crate::tray_scenes::{self, SceneTrayCommand};
 use crate::vm::VmController;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -33,6 +35,8 @@ pub enum TrayCommand {
     SetActiveBus(usize),
     ToggleSwitchBus(usize),
     SetIncrement(f32),
+    MiniKeyboard(MiniKeyboardTrayCommand),
+    Scene(SceneTrayCommand),
 }
 
 pub struct TrayHandle {
@@ -71,12 +75,17 @@ pub fn update_tooltip(tray: &TrayIcon, vm: &Arc<VmController>, config: &Config) 
     let _ = tray.set_tooltip(Some(vm.tooltip(config)));
 }
 
+/// Reconstruit le menu. Ne doit PAS faire d'I/O bloquante (HID, Voicemeeter).
 pub fn refresh_menu(tray: &TrayIcon, config: &Config) {
     let menu = build_menu(config);
     let _ = tray.set_menu(Some(Box::new(menu)));
 }
 
-pub fn command_from_menu_id(id: &MenuId, _config: &Config) -> Option<TrayCommand> {
+pub fn refresh_tooltip_only(tray: &TrayIcon, vm: &Arc<VmController>, config: &Config) {
+    update_tooltip(tray, vm, config);
+}
+
+pub fn command_from_menu_id(id: &MenuId, config: &Config) -> Option<TrayCommand> {
     if ids::quit() == id {
         return Some(TrayCommand::Quit);
     }
@@ -97,6 +106,16 @@ pub fn command_from_menu_id(id: &MenuId, _config: &Config) -> Option<TrayCommand
         if ids::increment(inc) == id {
             return Some(TrayCommand::SetIncrement(inc));
         }
+    }
+    if let Some(cmd) = tray_mini_keyboard::parse_command(
+        id,
+        config.mini_keyboard.device.vid,
+        config.mini_keyboard.device.pid,
+    ) {
+        return Some(TrayCommand::MiniKeyboard(cmd));
+    }
+    if let Some(cmd) = tray_scenes::parse_command(id) {
+        return Some(TrayCommand::Scene(cmd));
     }
     None
 }
@@ -165,6 +184,11 @@ fn build_menu(config: &Config) -> Menu {
         );
         let _ = menu.append(&item);
     }
+
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    tray_scenes::append_scenes_menu(&menu, config);
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = tray_mini_keyboard::append_mini_keyboard_menu(&menu, config);
 
     let _ = menu.append(&PredefinedMenuItem::separator());
     let reconnect = MenuItem::with_id(ids::reconnect(), "Reconnecter Voicemeeter", true, None);

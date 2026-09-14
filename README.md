@@ -67,6 +67,37 @@ Fichier : `%APPDATA%\voicemeeter-controller\config.json`
 
 Si un fichier `vm_target.txt` (contenant l'index du bus) est placé à côté de l'exécutable au premier lancement, sa valeur initialise `active_bus` puis est migrée vers `config.json`.
 
+## Mini-clavier HID (Zoom / Video)
+
+Sous-menu **Mini-clavier** dans le tray :
+
+1. **Activer** — capture exclusive du périphérique HID (bloque Vol/Mute système sur ce clavier)
+2. **Périphérique** — choisir le device dans la liste (défaut `1189:8890`)
+3. **Mappings** — pour chaque bouton, configurer l'action en mode Zoom et Video
+4. **Réinitialiser mappings** — restaurer la matrice par défaut
+
+### Modes
+
+- **Zoom** (défaut) : navigation / design (Photoshop, etc.)
+- **Video** : contrôle pas-à-pas
+
+Le **knob clic (Mute)** bascule entre Zoom et Video (toast + tooltip). Les événements volume du mini-clavier **ne passent pas** à Windows.
+
+### Matrice par défaut
+
+| Entrée | Mode Zoom | Mode Video |
+|--------|-----------|------------|
+| Bouton 1 (Prev) | Ctrl+Alt+* | Ctrl+Alt+* |
+| Bouton 2 (Next) | Ctrl+Alt+" | Ctrl+Alt+" |
+| Bouton 3 (Play) | Ctrl+Alt+) | Ctrl+Alt+) |
+| Knob clic | Bascule → Video | Bascule → Zoom |
+| Knob gauche | Ctrl+Molette bas | Flèche gauche |
+| Knob droite | Ctrl+Molette haut | Flèche droite |
+
+Les combos utilisent le layout clavier US (SendInput). Sur AZERTY, le caractère produit peut différer visuellement.
+
+La config est sauvegardée automatiquement dans `config.json` (section `mini_keyboard`).
+
 ## Icône personnalisée
 
 Placez un fichier `icon.ico` (ou `app.ico`) dans le **même dossier** que l'exécutable pour remplacer l'icône bleue par défaut. La plus grande résolution du fichier `.ico` est utilisée.
@@ -87,7 +118,9 @@ Clic droit sur l'icône dans la barre des tâches :
 |----------|----------|
 | L'app ne démarre pas | Vérifier que Voicemeeter est ouvert |
 | Les touches multimédia ne réagissent pas | Une autre app peut les capturer ; modifier les hotkeys dans `config.json` |
-| La touche Mute mute aussi Windows | Comportement Windows ; rebinder `switch` sur un combo clavier dans la config |
+| La touche Mute mute aussi Windows | Comportement Windows sur le **clavier principal** ; le mini-clavier HID est isolé si activé |
+| Mini-clavier : open exclusif échoue | Débrancher/rebrancher ; fermer toute app qui monopolise le HID |
+| Pas de toast au changement de mode | Normal si notifications Windows désactivées ; le tooltip tray affiche le mode |
 | Defender bloque l'exécutable | Compiler localement en `--release` et ajouter une exclusion si nécessaire |
 
 ## Structure du projet
@@ -100,4 +133,6 @@ src/
   actions.rs   — swap mute et volume
   hotkeys.rs   — raccourcis globaux
   tray.rs      — icône et menu system tray
+  tray_mini_keyboard.rs — config mini-clavier via tray
+  mini_keyboard/ — capture HID, mapping, injection SendInput
 ```

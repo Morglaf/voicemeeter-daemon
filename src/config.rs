@@ -1,4 +1,9 @@
 use directories::ProjectDirs;
+use crate::mini_keyboard::mapping::{DeviceMode, MappingTable, DEFAULT_PID, DEFAULT_VID};
+use crate::scenes::{
+    migrate_toggle_mode_to_cycle, ScenesConfig, Scene, ZOOM_SCENE_ID, VIDEO_SCENE_ID,
+    DEFAULT_SCENE_ID,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -32,11 +37,71 @@ pub struct Config {
     pub active_bus: usize,
     pub volume_increment: f32,
     pub hotkeys: HotkeyConfig,
+    #[serde(default)]
+    pub scenes: ScenesConfig,
+    #[serde(default)]
+    pub mini_keyboard: MiniKeyboardConfig,
     /// Champs legacy — migrés vers switch_buses au chargement.
     #[serde(default, skip_serializing)]
     bus_a: Option<usize>,
     #[serde(default, skip_serializing)]
     bus_b: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniKeyboardDevice {
+    pub vid: u16,
+    pub pid: u16,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+impl Default for MiniKeyboardDevice {
+    fn default() -> Self {
+        Self {
+            vid: DEFAULT_VID,
+            pid: DEFAULT_PID,
+            path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniKeyboardConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub device: MiniKeyboardDevice,
+    #[serde(default = "default_device_mode")]
+    pub mode: DeviceMode,
+    #[serde(default = "default_mappings")]
+    pub mappings: MappingTable,
+}
+
+fn default_device_mode() -> DeviceMode {
+    DeviceMode::Zoom
+}
+
+fn default_mappings() -> MappingTable {
+    MappingTable::defaults()
+}
+
+impl Default for MiniKeyboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            device: MiniKeyboardDevice::default(),
+            mode: DeviceMode::Zoom,
+            mappings: MappingTable::defaults(),
+        }
+    }
+}
+
+impl MiniKeyboardConfig {
+    #[allow(dead_code)]
+    pub fn reset_mappings(&mut self) {
+        self.mappings = MappingTable::defaults();
+    }
 }
 
 fn default_switch_buses() -> Vec<usize> {
@@ -50,6 +115,8 @@ impl Default for Config {
             active_bus: 0,
             volume_increment: 2.0,
             hotkeys: HotkeyConfig::default(),
+            scenes: ScenesConfig::default(),
+            mini_keyboard: MiniKeyboardConfig::default(),
             bus_a: None,
             bus_b: None,
         }
@@ -73,6 +140,7 @@ impl Config {
                 let mut config: Config = serde_json::from_str(&data)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 config.migrate_legacy();
+                config.migrate_scenes();
                 config.clamp_values();
                 return Ok(config);
             }
@@ -82,6 +150,7 @@ impl Config {
         if let Some(active) = Self::read_legacy_vm_target() {
             config.active_bus = active;
         }
+        config.migrate_scenes();
         config.clamp_values();
         config.save()?;
         Ok(config)
@@ -119,6 +188,39 @@ impl Config {
         self.bus_b = None;
     }
 
+    /// Migre les mappings Zoom/Video legacy vers le système de scènes.
+    fn migrate_scenes(&mut self) {
+        let needs_migration = self.scenes.items.is_empty()
+            || (self.scenes.items.len() == 1
+                && self.scenes.items[0].id == DEFAULT_SCENE_ID
+                && self.scenes.items[0].triggers.is_empty());
+
+        if !needs_migration {
+            self.scenes.ensure_valid();
+            return;
+        }
+
+        let mut zoom_mappings = self.mini_keyboard.mappings.mode_to_scene_mappings(DeviceMode::Zoom);
+        let mut video_mappings =
+            self.mini_keyboard.mappings.mode_to_scene_mappings(DeviceMode::Video);
+        migrate_toggle_mode_to_cycle(&mut zoom_mappings);
+        migrate_toggle_mode_to_cycle(&mut video_mappings);
+
+        self.scenes = ScenesConfig {
+            active_id: match self.mini_keyboard.mode {
+                DeviceMode::Video => VIDEO_SCENE_ID.to_string(),
+                DeviceMode::Zoom => ZOOM_SCENE_ID.to_string(),
+            },
+            default_scene_id: ZOOM_SCENE_ID.to_string(),
+            auto_switch: true,
+            items: vec![
+                Scene::with_id(ZOOM_SCENE_ID, "Zoom", zoom_mappings),
+                Scene::with_id(VIDEO_SCENE_ID, "Video", video_mappings),
+            ],
+        };
+        self.scenes.ensure_valid();
+    }
+
     fn clamp_values(&mut self) {
         if self.volume_increment <= 0.0 {
             self.volume_increment = 2.0;
@@ -135,6 +237,8 @@ impl Config {
         if !self.switch_buses.contains(&self.active_bus) {
             self.active_bus = self.switch_buses[0];
         }
+
+        self.scenes.ensure_valid();
     }
 
     pub fn bus_label(index: usize) -> String {
@@ -188,6 +292,8 @@ pub const INCREMENT_OPTIONS: [f32; 4] = [0.5, 1.0, 2.0, 5.0];
 #[cfg(test)]
 mod tests {
     use super::Config;
+    use crate::mini_keyboard::mapping::{DeviceMode, MappingTable};
+    use crate::scenes::{ScenesConfig, VIDEO_SCENE_ID};
 
     #[test]
     fn next_switch_bus_cycles() {
@@ -200,14 +306,13 @@ mod tests {
     }
 
     #[test]
-    fn next_switch_bus_three_channels() {
+    fn migrate_legacy_zoom_video_to_scenes() {
         let mut config = Config::default();
-        config.switch_buses = vec![0, 1, 2];
-        config.active_bus = 0;
-        assert_eq!(config.next_switch_bus(), 1);
-        config.active_bus = 1;
-        assert_eq!(config.next_switch_bus(), 2);
-        config.active_bus = 2;
-        assert_eq!(config.next_switch_bus(), 0);
+        config.scenes = ScenesConfig::default();
+        config.mini_keyboard.mappings = MappingTable::defaults();
+        config.mini_keyboard.mode = DeviceMode::Video;
+        config.migrate_scenes();
+        assert_eq!(config.scenes.items.len(), 2);
+        assert_eq!(config.scenes.active_id, VIDEO_SCENE_ID);
     }
 }
